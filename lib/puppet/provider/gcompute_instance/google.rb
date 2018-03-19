@@ -60,12 +60,96 @@ require 'puppet'
 Puppet::Type.type(:gcompute_instance).provide(:google) do
   mk_resource_methods
 
+  RESOURCE_SCOPE = 'https://www.googleapis.com/auth/cloud-platform'.freeze
+
   def self.instances
     debug('instances')
-    raise [
-      '"puppet resource" is not supported at the moment:',
-      'TODO(nelsonjr): https://goto.google.com/graphite-bugs-view?id=167'
-    ].join(' ')
+
+    resource = {
+      zone: 'us-central1-a',
+      project: 'google.com:graphite-playground',
+      credential: 'resource-cred'
+    }
+
+    auth_type = Puppet::Type.type(:gauth_credential)
+    auth = auth_type.new(title: 'resource-cred',
+                         path: '/home/nelsona/my_account.json',
+                         scopes: RESOURCE_SCOPE)
+    auth_type.provider(:serviceaccount).prefetch(resource[:credential] => auth)
+
+    zone_type = Puppet::Type.type(:gcompute_zone)
+    zone = zone_type.new(title: resource[:zone],
+                         project: resource[:project],
+                         credential: resource[:credential])
+    zone_type.provider(:google).prefetch(resource[:zone] => zone)
+
+    get_request = ::Google::Compute::Network::Get.new(collection(resource),
+                                                      fetch_auth(resource))
+    response = return_if_object(get_request.send, 'compute#instanceList')
+    instance_data = response['items']
+
+    #instance_data = [instance_data.first]
+
+    instance_type = Puppet::Type.type(:gcompute_instance)
+
+    #instances = instance_data.map do |data|  # |raw_data|
+    instances = instance_data.map do |raw_data|
+      data = raw_data
+      #data = raw_data.reject { |k, v| v.is_a? Array }
+      #               .reject { |k, v| v.is_a? Hash }
+      #data['disks'] = [{a: 'A'}]
+      #data['networkInterfaces'] = []
+      #data['serviceAccounts'] = []
+      #puts data
+      instance = instance_type.new(title: data['name'],
+                                   name: data['name'],
+                                   zone: resource[:zone],
+                                   project: resource[:project],
+                                   credential: resource[:credential])
+      instance.provider = present(data['name'], data, instance)
+      Google::ObjectStore.instance.add(:gcompute_instance, instance)
+
+      #require 'pry'; binding.pry
+      #require 'byebug'; byebug
+
+      props = instance.provider.instance_variable_get(:@property_hash)
+
+      unless props[:disks].nil?
+        props[:disks] = props[:disks].map { |d| JSON.parse(d.to_json) }
+      end
+
+      unless props[:network_interfaces].nil?
+        props[:network_interfaces] =
+          props[:network_interfaces].map { |d| JSON.parse(d.to_json) }
+      end
+
+      unless props[:service_accounts].nil?
+        props[:service_accounts] =
+          props[:service_accounts].map { |d| JSON.parse(d.to_json) }
+      end
+
+      #data['disks'] = [{a: 'A'}]
+      #data['networkInterfaces'] = []
+      #data['serviceAccounts'] = []
+
+      instance.provider
+      #instance
+      #new({
+      #  title: data['name'],
+      #  name: data['name'],
+      #  zone: resource[:zone],
+      #  project: resource[:project],
+      #  credential: resource[:credential]
+      #}.merge(data).merge(ensure: :present))
+    end
+
+    #prefetch(Hash[instances.map { |i| [i.name, i] }])
+
+    #require 'pry'; binding.pry
+    #require 'pp'; pp instances
+
+    instances
+    #instances.map(&:provider)
   end
 
   def self.prefetch(resources)
